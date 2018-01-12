@@ -12,6 +12,7 @@
 
 # Package Files #
 *.jar
+!MyPlayer/BoardGame-2.0-SNAPSHOT.jar
 *.war
 *.ear
 *.zip
