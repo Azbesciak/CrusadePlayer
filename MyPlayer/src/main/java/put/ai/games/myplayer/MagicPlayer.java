@@ -5,45 +5,31 @@ import java.util.List;
 import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiPredicate;
-import java.util.stream.StreamSupport;
+import java.util.stream.IntStream;
 
 import put.ai.games.game.Board;
 import put.ai.games.game.Move;
 import put.ai.games.game.Player;
 
-public class MyPlayer extends Player {
+import static java.lang.Integer.MIN_VALUE;
+import static java.lang.System.currentTimeMillis;
+import static java.util.stream.StreamSupport.stream;
 
-    private static final BiPredicate<Integer, Integer> IS_CURRENT_BIGGER = (current, best) -> current >= best;
-    private static final BiPredicate<Integer, Integer> IS_CURRENT_LOWER = (current, best) -> current <= best;
+/**
+ * class made for, and used by tree searching algorithms ( min-max, AB )
+ *
+ * @author Witold Kupś 127088 Mikołaj Śledź 127310
+ */
+public class MagicPlayer extends Player {
+
+    private static final BiPredicate<Integer, Integer> IS_CURRENT_BIGGER = (current, best) -> current > best;
+    private static final BiPredicate<Integer, Integer> IS_CURRENT_LOWER = (current, best) -> current < best;
     private Random random = new Random();
 
-    ExecutorService executor = Executors.newCachedThreadPool();
-
-    /**
-     * class made for, and used by tree searching algorithms ( min-max, AB )
-     *
-     * @author Witold Kupś 127088 Mikołaj Śledź 127310
-     */
-    private static class MoveValueTree {
-
-        int value;
-        Move move;
-
-        MoveValueTree() {
-            this.value = 0;
-        }
-
-        public MoveValueTree(int value) {
-            this.value = value;
-        }
-
-        MoveValueTree(Move move, int value) {
-            this.move = move;
-            this.value = value;
-        }
-    }
+    private final ExecutorService executor = Executors.newCachedThreadPool();
 
     @Override
     public String getName() {
@@ -60,15 +46,52 @@ public class MyPlayer extends Player {
      */
     @Override
     public Move nextMove(Board b) {
-        List<Move> moves = b.getMovesFor(getColor());
+        final TimeMeasurer timeMeasurer = new TimeMeasurer();
+        final Color player = getColor();
+        List<Move> moves = b.getMovesFor(player);
 
         /* set depth */
         int depth = 3;
 
         /* minimax below */
-//        moves.parallelStream().
-        MoveValueTree bestNode = minMax(moves.get(random.nextInt(moves.size())), depth, getColor(), b);
-        return bestNode.move;
+        final BestMoveFilter bestMoveFilter = new BestMoveFilter(player);
+        executor.submit(() -> {
+                    IntStream.range(1, depth).parallel()
+                            .mapToObj(d -> moves.parallelStream().map(move -> minMax(move, d, player, b)))
+                            .flatMap(s -> s)
+                            .forEach(bestMoveFilter::testAndAssignIfBetter);
+                    timeMeasurer.forceToStop();
+                }
+        );
+        timeMeasurer.blockTillTimeEnd();
+        return bestMoveFilter.bestNode.move != null
+                ? bestMoveFilter.bestNode.move
+                : moves.get(random.nextInt(moves.size()));
+    }
+
+    private class TimeMeasurer {
+        private static final int TIME_SPACE = 100;
+        private static final int SLEEP_TIME = TIME_SPACE - 20;
+        private final long endTime;
+        private final AtomicBoolean isForcedToStop = new AtomicBoolean(false);
+
+        private TimeMeasurer() {
+            endTime = currentTimeMillis() + getTime();
+        }
+
+        void blockTillTimeEnd() {
+            while (currentTimeMillis() < endTime - TIME_SPACE && !isForcedToStop.get()) {
+                try {
+                    Thread.sleep(SLEEP_TIME);
+                } catch (InterruptedException e) {
+                    throw new RuntimeException("STOPPED");
+                }
+            }
+        }
+
+        void forceToStop() {
+            isForcedToStop.set(true);
+        }
     }
 
 
@@ -140,14 +163,15 @@ public class MyPlayer extends Player {
 
     private MoveValueTree makeAMove(int depth, Color player, Board board, Iterable<Move> moves) {
         final BestMoveFilter bestMoveFilter = new BestMoveFilter(player);
-        StreamSupport.stream(moves.spliterator(), true).forEach(child -> {
-            Board b = board.clone();
-            b.doMove(child);
-            MoveValueTree child_node = minMax(child, depth - 1, getOpponent(player), b);
-            child_node.move = child;
+        stream(moves.spliterator(), true)
+                .forEach(child -> {
+                    Board b = board.clone();
+                    b.doMove(child);
+                    MoveValueTree child_node = minMax(child, depth - 1, getOpponent(player), b);
+                    child_node.move = child;
 //            b.undoMove(child);
-            bestMoveFilter.testAndAssignIfBetter(child_node.value, child);
-        });
+                    bestMoveFilter.testAndAssignIfBetter(child_node);
+                });
         return bestMoveFilter.bestNode;
     }
 
@@ -162,31 +186,51 @@ public class MyPlayer extends Player {
             bestVal = new AtomicInteger(playerType.startValue);
         }
 
-        synchronized void testAndAssignIfBetter(int value, Move move) {
-            if (playerType.isBetter.test(value, bestVal.get())) {
-                bestVal.set(value);
-                bestNode.move = move;
+        synchronized void testAndAssignIfBetter(MoveValueTree childMove) {
+            if (playerType.isBetter.test(childMove.value, bestVal.get())) {
+                bestVal.set(childMove.value);
+                bestNode.move = childMove.move;
                 bestNode.value = bestVal.get();
             }
         }
+
         private PlayerType getPlayerType(Color player) {
             return player.equals(Color.PLAYER1) ? PlayerType.MAXIMIZER : PlayerType.MINIMIZER;
         }
+    }
 
-        private enum PlayerType {
-            MAXIMIZER(Integer.MIN_VALUE, IS_CURRENT_BIGGER),
-            MINIMIZER(Integer.MIN_VALUE, IS_CURRENT_BIGGER);
+    private enum PlayerType {
+        MAXIMIZER(MIN_VALUE, IS_CURRENT_BIGGER),
+        MINIMIZER(MIN_VALUE, IS_CURRENT_LOWER);
 
-            final int startValue;
-            final BiPredicate<Integer, Integer> isBetter;
+        final int startValue;
+        final BiPredicate<Integer, Integer> isBetter;
 
-            PlayerType(int minValue, BiPredicate<Integer, Integer> isBetter) {
-                this.startValue = minValue;
-                this.isBetter = isBetter;
-            }
+        PlayerType(int minValue, BiPredicate<Integer, Integer> isBetter) {
+            this.startValue = minValue;
+            this.isBetter = isBetter;
         }
     }
 
+    private static class MoveValueTree {
+        int value;
+        Move move;
+        MoveValueTree() {
+            this.value = 0;
+        }
+
+        MoveValueTree(Move move, int value) {
+            this.move = move;
+            this.value = value;
+        }
+
+        @Override
+        public String toString() {
+            return "MoveValueTree{" + "value=" + value +
+                    ", move=" + move +
+                    '}';
+        }
+    }
 
 
     /**
@@ -214,7 +258,7 @@ public class MyPlayer extends Player {
         MoveValueTree ret = new MoveValueTree();
 
         if (isMaximizer) {
-            int bestValue = Integer.MIN_VALUE;
+            int bestValue = MIN_VALUE;
             while (movesIterator.hasNext()) {
                 Move child = movesIterator.next();
                 Board b = board.clone();
@@ -254,7 +298,6 @@ public class MyPlayer extends Player {
             return ret;
         }
     }
-
 
 
     public static void main(String[] args) {
