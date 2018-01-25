@@ -4,7 +4,7 @@
     <modelVersion>4.0.0</modelVersion>
     <groupId>put.ai.games</groupId>
     <artifactId>MyPlayer</artifactId>
-    <version>2.0-SNAPSHOT</version>
+    <version>2.0</version>
     <name>MyPlayer</name>
     <url>http://maven.apache.org</url>
     <properties>
