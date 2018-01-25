@@ -64,7 +64,6 @@ public class MagicPlayer extends Player {
         );
         timeMeasurer.blockTillTimeEnd();
         forceToStop();
-        System.out.println(bestMoveFilter.bestNode);
         if (bestMoveFilter.bestNode != null && bestMoveFilter.bestNode.move != null) {
             return bestMoveFilter.bestNode.move;
         } else {
@@ -99,7 +98,6 @@ public class MagicPlayer extends Player {
                 }
             }
         }
-
     }
 
 
@@ -111,23 +109,18 @@ public class MagicPlayer extends Player {
      */
     private int evaluateBoard(Board board) {
         int value = 0;
-        boolean p1wonField = (board.getState(board.getSize() - 1, board.getSize() - 1) == Color.PLAYER1);
-        boolean p2wonField = (board.getState(0, 0) == Color.PLAYER2);
-        // if next move == win for each player
-        if (p1wonField) {
-            value += 20;    // 4*4 == 16
-        }
-        if (p2wonField) {
-            value -= 20;
-        }
-        // loop checking block
-        for (int i = 0; i < board.getSize(); ++i) {
-            for (int j = 0; j < board.getSize(); ++j) {
-                // counting # of each player checkers
-                if (board.getState(i, j) == Color.PLAYER1) {
-                    ++value;
-                } else if (board.getState(i, j) == Color.PLAYER2) {
-                    --value;
+        final int size = board.getSize();
+        for (int x = 0; x < size; x++) {
+            for (int y = 0; y < size; y++) {
+                switch (board.getState(x, y)) {
+                    case PLAYER1:
+                        value++;
+                        break;
+                    case PLAYER2:
+                        value--;
+                        break;
+                    case EMPTY:
+                        break;
                 }
             }
         }
