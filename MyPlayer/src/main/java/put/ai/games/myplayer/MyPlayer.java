@@ -12,8 +12,7 @@ import put.ai.games.game.Player;
 public class MyPlayer extends Player {
 
     private static final BiPredicate<Integer, Integer> IS_CURRENT_BIGGER = (current, best) -> current >= best;
-    private static final BiPredicate<Integer, Integer> IS_CURRENT_LOWER =
-            (current, best) -> current <= best;
+    private static final BiPredicate<Integer, Integer> IS_CURRENT_LOWER = (current, best) -> current <= best;
     private Random random = new Random(System.currentTimeMillis());
     
     /**
@@ -109,26 +108,24 @@ public class MyPlayer extends Player {
         }
     	
     	// not leaf - do below
-        Iterator<Move> movesIterator = moves.iterator();
         boolean isMaximizer = (player.equals(Color.PLAYER1));
 
         if(isMaximizer) {
-			return makeAMove(depth, player, board, movesIterator, Integer.MIN_VALUE, IS_CURRENT_BIGGER);
+			return makeAMove(depth, player, board, moves, Integer.MIN_VALUE, IS_CURRENT_BIGGER);
         } else {
-        	return makeAMove(depth, player, board, movesIterator, Integer.MAX_VALUE, IS_CURRENT_LOWER);
+        	return makeAMove(depth, player, board, moves, Integer.MAX_VALUE, IS_CURRENT_LOWER);
         }
     }
 
-	private MoveValueTree makeAMove(int depth, Color player, Board board, Iterator<Move> movesIterator,
+	private MoveValueTree makeAMove(int depth, Color player, Board board, Iterable<Move> moves,
                                     int bestValue, BiPredicate<Integer, Integer> predicate) {
         MoveValueTree ret = new MoveValueTree();
-        while (movesIterator.hasNext()) {
-            Move child = movesIterator.next();
+        for (Move child : moves) {
             Board b = board.clone();
             b.doMove(child);
             MoveValueTree child_node = minMax(child, depth - 1, getOpponent(player), b);
             b.undoMove(child);
-            if(predicate.test(child_node.value, bestValue)) {// taking max(oldValue,newValue
+            if (predicate.test(child_node.value, bestValue)) {
                 bestValue = child_node.value;
                 ret.move = child;
                 ret.value = bestValue;
