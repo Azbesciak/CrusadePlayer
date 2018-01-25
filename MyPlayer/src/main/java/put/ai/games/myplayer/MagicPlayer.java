@@ -28,6 +28,7 @@ public class MagicPlayer extends Player {
     private static final BiPredicate<Integer, Integer> IS_CURRENT_LOWER = (current, best) -> current < best;
     private static final Random random = new Random();
     private static final int MAX_DEPTH = 4;
+    private static final double VALUE_MULTIPLIER = 1.25;
     private final ExecutorService executor;
 
     private final AtomicBoolean isForcedToStop = new AtomicBoolean(false);
@@ -38,7 +39,7 @@ public class MagicPlayer extends Player {
 
     @Override
     public String getName() {
-        return "Witold Kupś 127088 Mikołaj Śledź 127310";
+        return "Witold SIMPLE 127088 Mikołaj Śledź 127310";
     }
 
     /**
@@ -112,19 +113,51 @@ public class MagicPlayer extends Player {
         final int size = board.getSize();
         for (int x = 0; x < size; x++) {
             for (int y = 0; y < size; y++) {
-                switch (board.getState(x, y)) {
-                    case PLAYER1:
-                        value++;
-                        break;
-                    case PLAYER2:
-                        value--;
-                        break;
-                    case EMPTY:
-                        break;
-                }
+                value += getFieldValue(board, x, y);
             }
         }
         return value;
+    }
+
+    private int evaluateFieldWithNeighbours(Board board, int x, int y) {
+        final int size = board.getSize();
+        int value = getFieldValue(board, x, y);
+        if (value == 0) return 0;
+        if (x >= 1) {
+            value += countValueVertically(board, x-1, y, size);
+        }
+        if (x < size - 1) {
+            value += countValueVertically(board, x+1, y, size);
+        }
+
+        return value + countOnVerticalEdges(board, x, y, size);
+    }
+
+    private int countValueVertically(Board board, int x, int y, int size) {
+        return getFieldValue(board, x, y) + countOnVerticalEdges(board, x, y, size);
+    }
+
+    private int countOnVerticalEdges(Board board, int x, int y, int size) {
+        int value = 0;
+        if (y >= 1) {
+            value += getFieldValue(board, x, y-1);
+        }
+        if (y < size-1) {
+            value += getFieldValue(board, x, y+1);
+        }
+        return value;
+    }
+
+    private int getFieldValue(Board board, int x, int y) {
+        switch (board.getState(x, y)) {
+            case PLAYER1:
+                return 1;
+            case PLAYER2:
+                return -1;
+            case EMPTY:
+            default:
+                return 0;
+        }
     }
 
     /**
@@ -162,7 +195,7 @@ public class MagicPlayer extends Player {
                     }
                     child_node.iteration = depth;
                     child_node.move = child;
-                    child_node.value *= 1.25;
+                    child_node.value *= VALUE_MULTIPLIER;
                     bestMoveFilter.testAndAssignIfBetter(child_node);
                 });
         return bestMoveFilter.bestNode;
