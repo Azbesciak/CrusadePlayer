@@ -5,7 +5,6 @@ import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.atomic.AtomicInteger;
 import java.util.function.BiPredicate;
 import java.util.stream.IntStream;
 
@@ -28,6 +27,7 @@ public class MagicPlayer extends Player {
     private static final BiPredicate<Integer, Integer> IS_CURRENT_LOWER = (current, best) -> current < best;
     private static final Random random = new Random();
     private static final int MAX_DEPTH = 4;
+    private static final int MIN_DEPTH = 2;
     private static final double VALUE_MULTIPLIER = 1.25;
     private final ExecutorService executor;
 
@@ -39,14 +39,13 @@ public class MagicPlayer extends Player {
 
     @Override
     public String getName() {
-        return "Witold SIMPLE 127088 Mikołaj Śledź 127310";
+        return "Witold Kupś 127088 Mikołaj Śledź 127310";
     }
 
     /**
      * implementation of function nextMove by out team
      * <p>
      * comment/uncomment blocks depending what algorithm you want to use, available:
-     * - naive -off
      * - minmax
      * - alphabeta -off
      */
@@ -57,7 +56,7 @@ public class MagicPlayer extends Player {
         final BestMoveFilter bestMoveFilter = new BestMoveFilter(playerColor);
         resetStopper();
         executor.submit(() -> {
-                    IntStream.range(1, MAX_DEPTH).parallel()
+                    IntStream.range(MIN_DEPTH, MAX_DEPTH).parallel()
                             .mapToObj(depth -> minMax(null, depth, playerColor, b))
                             .forEach(bestMoveFilter::testAndAssignIfBetter);
                     forceToStop();
@@ -204,17 +203,17 @@ public class MagicPlayer extends Player {
     private static class BestMoveFilter {
         final PlayerType playerType;
         MoveValueTree bestNode;
-        final AtomicInteger bestVal;
+        volatile int bestVal;
 
         private BestMoveFilter(Color player) {
             playerType = getPlayerType(player);
-            bestVal = new AtomicInteger(playerType.startValue);
+            bestVal = playerType.startValue;
         }
 
         synchronized void testAndAssignIfBetter(MoveValueTree childMove) {
             if (childMove != null &&
-                    (bestNode == null || playerType.isBetter.test(childMove.value, bestVal.get()))) {
-                bestVal.set(childMove.value);
+                    (bestNode == null || playerType.isBetter.test(childMove.value, bestVal))) {
+                bestVal = childMove.value;
                 bestNode = childMove;
             }
         }
