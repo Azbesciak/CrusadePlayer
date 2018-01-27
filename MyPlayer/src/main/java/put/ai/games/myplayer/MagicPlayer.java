@@ -185,7 +185,7 @@ public class MagicPlayer extends Player {
 
         abstract void manageAlphaBeta(MoveValueTree childMove, AlphaBeta ab);
 
-        MoveValueTree bestNode;
+        volatile MoveValueTree bestNode;
         volatile int bestVal;
 
         private PlayerType(int startValue) {
