@@ -5,13 +5,12 @@ import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.BiPredicate;
-import java.util.stream.IntStream;
 
 import put.ai.games.game.Board;
 import put.ai.games.game.Move;
 import put.ai.games.game.Player;
 
+import static java.lang.Integer.MAX_VALUE;
 import static java.lang.Integer.MIN_VALUE;
 import static java.lang.System.currentTimeMillis;
 import static java.util.stream.StreamSupport.stream;
@@ -23,10 +22,7 @@ import static java.util.stream.StreamSupport.stream;
  */
 public class MagicPlayer extends Player {
 
-    private static final BiPredicate<Integer, Integer> IS_CURRENT_BIGGER = (current, best) -> current > best;
-    private static final BiPredicate<Integer, Integer> IS_CURRENT_LOWER = (current, best) -> current < best;
     private static final Random random = new Random();
-    private static final int MAX_DEPTH = 4;
     private static final int MIN_DEPTH = 2;
     private static final double VALUE_MULTIPLIER = 1.25;
     private final ExecutorService executor;
@@ -53,12 +49,13 @@ public class MagicPlayer extends Player {
     public Move nextMove(Board b) {
         final TimeMeasurer timeMeasurer = new TimeMeasurer();
         final Color playerColor = getColor();
-        final BestMoveFilter bestMoveFilter = new BestMoveFilter(playerColor);
+        final PlayerType bestMoveFilter = PlayerType.getPlayerType(playerColor);
         resetStopper();
         executor.submit(() -> {
-                    IntStream.range(MIN_DEPTH, MAX_DEPTH).parallel()
-                            .mapToObj(depth -> minMax(null, depth, playerColor, b))
-                            .forEach(bestMoveFilter::testAndAssignIfBetter);
+                    for (int d = MIN_DEPTH; timeMeasurer.hasEnoughTime() && d < 10; d+=2) {
+                        final MoveValueTree moveValueTree = minMax(null, d, playerColor, b);
+                        bestMoveFilter.testAndAssignIfBetter(moveValueTree);
+                    }
                     forceToStop();
                 }
         );
@@ -81,22 +78,27 @@ public class MagicPlayer extends Player {
     }
 
     private class TimeMeasurer {
-        private static final int TIME_SPACE = 100;
-        private static final int SLEEP_TIME = TIME_SPACE - 20;
+        private static final int TIME_SPACE = 200;
+        private static final int SLEEP_TIME = TIME_SPACE - 50;
         private final long endTime;
 
         private TimeMeasurer() {
             endTime = currentTimeMillis() + getTime();
+            Thread.currentThread().setPriority(Thread.NORM_PRIORITY + 1);
         }
 
         void blockTillTimeEnd() {
-            while (currentTimeMillis() < endTime - TIME_SPACE && !isForcedToStop.get()) {
+            while (hasEnoughTime()) {
                 try {
                     Thread.sleep(SLEEP_TIME);
                 } catch (InterruptedException e) {
                     throw new RuntimeException("STOPPED");
                 }
             }
+        }
+
+        private boolean hasEnoughTime() {
+            return currentTimeMillis() < endTime - TIME_SPACE && !isForcedToStop.get();
         }
     }
 
@@ -183,7 +185,7 @@ public class MagicPlayer extends Player {
     }
 
     private MoveValueTree makeAMove(int depth, Color player, Board board, Iterable<Move> moves) {
-        final BestMoveFilter bestMoveFilter = new BestMoveFilter(player);
+        final PlayerType bestMoveFilter = PlayerType.getPlayerType(player);
         stream(moves.spliterator(), true)
                 .forEach(child -> {
                     Board b = board.clone();
@@ -200,44 +202,54 @@ public class MagicPlayer extends Player {
         return bestMoveFilter.bestNode;
     }
 
-    private static class BestMoveFilter {
-        final PlayerType playerType;
+    private static abstract class PlayerType {
         MoveValueTree bestNode;
-        volatile int bestVal;
+        volatile double bestVal;
 
-        private BestMoveFilter(Color player) {
-            playerType = getPlayerType(player);
-            bestVal = playerType.startValue;
+        abstract boolean isBetter(Double current, Double best);
+
+        PlayerType(int startVal) {
+            this.bestVal = startVal;
         }
 
         synchronized void testAndAssignIfBetter(MoveValueTree childMove) {
             if (childMove != null &&
-                    (bestNode == null || playerType.isBetter.test(childMove.value, bestVal))) {
+                    (bestNode == null || isBetter(childMove.value, bestVal))) {
                 bestVal = childMove.value;
                 bestNode = childMove;
             }
         }
 
-        private PlayerType getPlayerType(Color player) {
-            return player.equals(Color.PLAYER1) ? PlayerType.MAXIMIZER : PlayerType.MINIMIZER;
+        static PlayerType getPlayerType(Color player) {
+            return player.equals(Color.PLAYER1) ? new Maximizer() : new Minimizer();
         }
     }
 
-    private enum PlayerType {
-        MAXIMIZER(MIN_VALUE, IS_CURRENT_BIGGER),
-        MINIMIZER(MIN_VALUE, IS_CURRENT_LOWER);
+    private static class Maximizer extends PlayerType {
 
-        final int startValue;
-        final BiPredicate<Integer, Integer> isBetter;
+        Maximizer() {
+            super(MIN_VALUE);
+        }
 
-        PlayerType(int minValue, BiPredicate<Integer, Integer> isBetter) {
-            this.startValue = minValue;
-            this.isBetter = isBetter;
+        @Override
+        boolean isBetter(Double current, Double best) {
+            return current > best;
+        }
+    }
+    private static class Minimizer extends PlayerType {
+
+        Minimizer() {
+            super(MAX_VALUE);
+        }
+
+        @Override
+        boolean isBetter(Double current, Double best) {
+            return current < best;
         }
     }
 
     private static class MoveValueTree {
-        int value;
+        double value;
         Move move;
         int iteration;
 
