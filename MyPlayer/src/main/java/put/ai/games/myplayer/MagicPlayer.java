@@ -5,13 +5,13 @@ import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.function.BiPredicate;
 import java.util.stream.IntStream;
 
 import put.ai.games.game.Board;
 import put.ai.games.game.Move;
 import put.ai.games.game.Player;
 
+import static java.lang.Integer.MAX_VALUE;
 import static java.lang.Integer.MIN_VALUE;
 import static java.lang.System.currentTimeMillis;
 import static java.util.stream.StreamSupport.stream;
@@ -23,8 +23,6 @@ import static java.util.stream.StreamSupport.stream;
  */
 public class MagicPlayer extends Player {
 
-    private static final BiPredicate<Integer, Integer> IS_CURRENT_BIGGER = (current, best) -> current > best;
-    private static final BiPredicate<Integer, Integer> IS_CURRENT_LOWER = (current, best) -> current < best;
     private static final Random random = new Random();
     private static final int MAX_DEPTH = 4;
     private static final int MIN_DEPTH = 2;
@@ -39,7 +37,7 @@ public class MagicPlayer extends Player {
 
     @Override
     public String getName() {
-        return "Witold Kupś 127088 Mikołaj Śledź 127310";
+        return "WitoldAB Kupś 127088 Mikołaj Śledź 127310";
     }
 
     /**
@@ -53,17 +51,18 @@ public class MagicPlayer extends Player {
     public Move nextMove(Board b) {
         final TimeMeasurer timeMeasurer = new TimeMeasurer();
         final Color playerColor = getColor();
-        final BestMoveFilter bestMoveFilter = new BestMoveFilter(playerColor);
+        final PlayerType bestMoveFilter = PlayerType.getPlayer(playerColor);
         resetStopper();
         executor.submit(() -> {
                     IntStream.range(MIN_DEPTH, MAX_DEPTH).parallel()
-                            .mapToObj(depth -> minMax(null, depth, playerColor, b))
-                            .forEach(bestMoveFilter::testAndAssignIfBetter);
+                            .mapToObj(depth -> minMax(null, depth, new AlphaBeta(), playerColor, b))
+                            .forEach(bestMoveFilter::validateResult);
                     forceToStop();
                 }
         );
         timeMeasurer.blockTillTimeEnd();
         forceToStop();
+        System.out.println(bestMoveFilter.bestNode);
         if (bestMoveFilter.bestNode != null && bestMoveFilter.bestNode.move != null) {
             return bestMoveFilter.bestNode.move;
         } else {
@@ -123,10 +122,10 @@ public class MagicPlayer extends Player {
         int value = getFieldValue(board, x, y);
         if (value == 0) return 0;
         if (x >= 1) {
-            value += countValueVertically(board, x-1, y, size);
+            value += countValueVertically(board, x - 1, y, size);
         }
         if (x < size - 1) {
-            value += countValueVertically(board, x+1, y, size);
+            value += countValueVertically(board, x + 1, y, size);
         }
 
         return value + countOnVerticalEdges(board, x, y, size);
@@ -139,10 +138,10 @@ public class MagicPlayer extends Player {
     private int countOnVerticalEdges(Board board, int x, int y, int size) {
         int value = 0;
         if (y >= 1) {
-            value += getFieldValue(board, x, y-1);
+            value += getFieldValue(board, x, y - 1);
         }
-        if (y < size-1) {
-            value += getFieldValue(board, x, y+1);
+        if (y < size - 1) {
+            value += getFieldValue(board, x, y + 1);
         }
         return value;
     }
@@ -168,7 +167,7 @@ public class MagicPlayer extends Player {
      * @param board  actual board state
      * @return private MoveValueTree
      */
-    private MoveValueTree minMax(Move node, int depth, Color player, Board board) {
+    private MoveValueTree minMax(Move node, int depth, AlphaBeta ab, Color player, Board board) {
 
         List<Move> moves = board.getMovesFor(player);
 
@@ -179,60 +178,144 @@ public class MagicPlayer extends Player {
         }
 
         // not leaf - do below
-        return makeAMove(depth, player, board, moves);
+        return makeAMove(depth, ab.copy(), player, board, moves);
     }
 
-    private MoveValueTree makeAMove(int depth, Color player, Board board, Iterable<Move> moves) {
-        final BestMoveFilter bestMoveFilter = new BestMoveFilter(player);
+    private MoveValueTree makeAMove(int depth, AlphaBeta ab, Color player, Board board, Iterable<Move> moves) {
+        final PlayerType bestMoveFilter = PlayerType.getPlayer(player);
+        final AtomicBoolean isCutOff = new AtomicBoolean(false);
         stream(moves.spliterator(), true)
                 .forEach(child -> {
+                    if (shouldStopSearching(isCutOff)) return;
                     Board b = board.clone();
                     b.doMove(child);
-                    MoveValueTree child_node = minMax(child, depth - 1, getOpponent(player), b);
-                    if (isForcedToStop.get()) {
-                        return;
-                    }
+                    MoveValueTree child_node = minMax(child, depth - 1, ab, getOpponent(player), b);
+                    if (shouldStopSearching(isCutOff)) return;
                     child_node.iteration = depth;
                     child_node.move = child;
                     child_node.value *= VALUE_MULTIPLIER;
-                    bestMoveFilter.testAndAssignIfBetter(child_node);
+                    if (bestMoveFilter.validateResult(child_node, ab)) {
+                        isCutOff.set(true);
+                    }
                 });
         return bestMoveFilter.bestNode;
     }
 
-    private static class BestMoveFilter {
-        final PlayerType playerType;
+    private boolean shouldStopSearching(AtomicBoolean isCutOff) {
+        if (isForcedToStop.get() || isCutOff.get()) {
+            System.out.println("CUT OFF!");
+            return true;
+        }
+        return false;
+    }
+
+    private abstract static class PlayerType {
+        abstract boolean isBetter(Integer currentVal, Integer bestVal);
+
+        abstract void manageCutOff(MoveValueTree childMove, AlphaBeta ab);
+
+        abstract void manageAlphaBeta(MoveValueTree childMove, AlphaBeta ab);
+
         MoveValueTree bestNode;
         volatile int bestVal;
 
-        private BestMoveFilter(Color player) {
-            playerType = getPlayerType(player);
-            bestVal = playerType.startValue;
+        private PlayerType(int startValue) {
+            bestVal = startValue;
         }
 
-        synchronized void testAndAssignIfBetter(MoveValueTree childMove) {
-            if (childMove != null &&
-                    (bestNode == null || playerType.isBetter.test(childMove.value, bestVal))) {
-                bestVal = childMove.value;
+        static PlayerType getPlayer(Color player) {
+            return player.equals(Color.PLAYER1) ? new Maximizer() : new Minimizer();
+        }
+
+        synchronized boolean validateResult(MoveValueTree childMove, AlphaBeta ab) {
+            validateResult(childMove);
+            manageAlphaBeta(childMove, ab);
+            if (ab.isBettaBellowAlpha()) {
+                manageCutOff(childMove, ab);
+                bestNode.move = null;
+                return true;
+            }
+            return false;
+        }
+
+        synchronized void validateResult(MoveValueTree childMove) {
+            if (childMove != null && childMove.move != null &&
+                    (bestNode == null || isBetter(childMove.value, bestNode.value))) {
+                bestNode = childMove;
+            }
+        }
+    }
+
+    private static class Maximizer extends PlayerType {
+
+        private Maximizer() {
+            super(MIN_VALUE);
+        }
+
+        @Override
+        boolean isBetter(Integer currentVal, Integer bestVal) {
+            return currentVal > bestVal;
+        }
+
+        @Override
+        void manageAlphaBeta(MoveValueTree childMove, AlphaBeta ab) {
+            if (childMove.value > ab.alpha) {
+                ab.alpha = childMove.value;
                 bestNode = childMove;
             }
         }
 
-        private PlayerType getPlayerType(Color player) {
-            return player.equals(Color.PLAYER1) ? PlayerType.MAXIMIZER : PlayerType.MINIMIZER;
+        @Override
+        void manageCutOff(MoveValueTree childMove, AlphaBeta ab) {
+            bestNode.value = ab.beta;
         }
     }
 
-    private enum PlayerType {
-        MAXIMIZER(MIN_VALUE, IS_CURRENT_BIGGER),
-        MINIMIZER(MIN_VALUE, IS_CURRENT_LOWER);
+    private static class Minimizer extends PlayerType {
 
-        final int startValue;
-        final BiPredicate<Integer, Integer> isBetter;
+        private Minimizer() {
+            super(MAX_VALUE);
+        }
 
-        PlayerType(int minValue, BiPredicate<Integer, Integer> isBetter) {
-            this.startValue = minValue;
-            this.isBetter = isBetter;
+        @Override
+        boolean isBetter(Integer currentVal, Integer oldVal) {
+            return currentVal < bestVal;
+        }
+
+        @Override
+        void manageCutOff(MoveValueTree childMove, AlphaBeta ab) {
+            childMove.value = ab.alpha;
+        }
+
+        @Override
+        void manageAlphaBeta(MoveValueTree childMove, AlphaBeta ab) {
+            if (childMove.value < ab.beta) {
+                ab.beta = childMove.value;
+                bestNode = childMove;
+            }
+        }
+    }
+
+    private class AlphaBeta {
+        int alpha;
+        int beta;
+
+        AlphaBeta() {
+            this.alpha = MIN_VALUE;
+            this.beta = MAX_VALUE;
+        }
+
+        AlphaBeta(int alpha, int beta) {
+            this.alpha = alpha;
+            this.beta = beta;
+        }
+
+        AlphaBeta copy() {
+            return new AlphaBeta(alpha, beta);
+        }
+
+        boolean isBettaBellowAlpha() {
+            return beta <= alpha;
         }
     }
 
@@ -253,6 +336,7 @@ public class MagicPlayer extends Player {
                     ", iteration=" + iteration +
                     '}';
         }
+
     }
 
     public static void main(String[] args) {
