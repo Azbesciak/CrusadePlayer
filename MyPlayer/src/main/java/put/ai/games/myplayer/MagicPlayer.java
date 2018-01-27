@@ -24,9 +24,7 @@ import static java.util.stream.StreamSupport.stream;
 public class MagicPlayer extends Player {
 
     private static final Random random = new Random();
-    private static final int MAX_DEPTH = 4;
     private static final int MIN_DEPTH = 2;
-    private static final double VALUE_MULTIPLIER = 1.25;
     private final ExecutorService executor;
 
     private final AtomicBoolean isForcedToStop = new AtomicBoolean(false);
@@ -54,9 +52,9 @@ public class MagicPlayer extends Player {
         final PlayerType bestMoveFilter = PlayerType.getPlayer(playerColor);
         resetStopper();
         executor.submit(() -> {
-                    IntStream.range(MIN_DEPTH, MAX_DEPTH).parallel()
-                            .mapToObj(depth -> minMax(null, depth, new AlphaBeta(), playerColor, b))
-                            .forEach(bestMoveFilter::validateResult);
+                    for (int d = MIN_DEPTH; timeMeasurer.hasEnoughTime() && d < 10; d += 2) {
+                        bestMoveFilter.validateResult(minMax(null, d, new AlphaBeta(), playerColor, b));
+                    }
                     forceToStop();
                 }
         );
@@ -86,10 +84,11 @@ public class MagicPlayer extends Player {
 
         private TimeMeasurer() {
             endTime = currentTimeMillis() + getTime();
+            Thread.currentThread().setPriority(Thread.NORM_PRIORITY + 1);
         }
 
         void blockTillTimeEnd() {
-            while (currentTimeMillis() < endTime - TIME_SPACE && !isForcedToStop.get()) {
+            while (hasEnoughTime()) {
                 try {
                     Thread.sleep(SLEEP_TIME);
                 } catch (InterruptedException e) {
@@ -97,8 +96,11 @@ public class MagicPlayer extends Player {
                 }
             }
         }
-    }
 
+        private boolean hasEnoughTime() {
+            return currentTimeMillis() < endTime - TIME_SPACE && !isForcedToStop.get();
+        }
+    }
 
     /**
      * heuristic function to evaluate board state's "value"
@@ -117,34 +119,6 @@ public class MagicPlayer extends Player {
         return value;
     }
 
-    private int evaluateFieldWithNeighbours(Board board, int x, int y) {
-        final int size = board.getSize();
-        int value = getFieldValue(board, x, y);
-        if (value == 0) return 0;
-        if (x >= 1) {
-            value += countValueVertically(board, x - 1, y, size);
-        }
-        if (x < size - 1) {
-            value += countValueVertically(board, x + 1, y, size);
-        }
-
-        return value + countOnVerticalEdges(board, x, y, size);
-    }
-
-    private int countValueVertically(Board board, int x, int y, int size) {
-        return getFieldValue(board, x, y) + countOnVerticalEdges(board, x, y, size);
-    }
-
-    private int countOnVerticalEdges(Board board, int x, int y, int size) {
-        int value = 0;
-        if (y >= 1) {
-            value += getFieldValue(board, x, y - 1);
-        }
-        if (y < size - 1) {
-            value += getFieldValue(board, x, y + 1);
-        }
-        return value;
-    }
 
     private int getFieldValue(Board board, int x, int y) {
         switch (board.getState(x, y)) {
@@ -173,7 +147,7 @@ public class MagicPlayer extends Player {
 
         // on the leaf
         if (depth == 0 || moves.isEmpty()) {
-            int v_heuristic = evaluateBoard(board);
+            double v_heuristic = evaluateBoard(board);
             return new MoveValueTree(node, v_heuristic);
         }
 
@@ -193,7 +167,6 @@ public class MagicPlayer extends Player {
                     if (shouldStopSearching(isCutOff)) return;
                     child_node.iteration = depth;
                     child_node.move = child;
-                    child_node.value *= VALUE_MULTIPLIER;
                     if (bestMoveFilter.validateResult(child_node, ab)) {
                         isCutOff.set(true);
                     }
@@ -202,15 +175,11 @@ public class MagicPlayer extends Player {
     }
 
     private boolean shouldStopSearching(AtomicBoolean isCutOff) {
-        if (isForcedToStop.get() || isCutOff.get()) {
-            System.out.println("CUT OFF!");
-            return true;
-        }
-        return false;
+        return isForcedToStop.get() || isCutOff.get();
     }
 
     private abstract static class PlayerType {
-        abstract boolean isBetter(Integer currentVal, Integer bestVal);
+        abstract boolean isBetter(double currentVal, double bestVal);
 
         abstract void manageCutOff(MoveValueTree childMove, AlphaBeta ab);
 
@@ -240,7 +209,9 @@ public class MagicPlayer extends Player {
 
         synchronized void validateResult(MoveValueTree childMove) {
             if (childMove != null && childMove.move != null &&
-                    (bestNode == null || isBetter(childMove.value, bestNode.value))) {
+                    (bestNode == null ||
+                            isBetter(childMove.value, bestNode.value) ||
+                            childMove.iteration > bestNode.iteration)) {
                 bestNode = childMove;
             }
         }
@@ -253,7 +224,7 @@ public class MagicPlayer extends Player {
         }
 
         @Override
-        boolean isBetter(Integer currentVal, Integer bestVal) {
+        boolean isBetter(double currentVal, double bestVal) {
             return currentVal > bestVal;
         }
 
@@ -278,7 +249,7 @@ public class MagicPlayer extends Player {
         }
 
         @Override
-        boolean isBetter(Integer currentVal, Integer oldVal) {
+        boolean isBetter(double currentVal, double oldVal) {
             return currentVal < bestVal;
         }
 
@@ -297,15 +268,15 @@ public class MagicPlayer extends Player {
     }
 
     private class AlphaBeta {
-        int alpha;
-        int beta;
+        double alpha;
+        double beta;
 
         AlphaBeta() {
             this.alpha = MIN_VALUE;
             this.beta = MAX_VALUE;
         }
 
-        AlphaBeta(int alpha, int beta) {
+        AlphaBeta(double alpha, double beta) {
             this.alpha = alpha;
             this.beta = beta;
         }
@@ -320,11 +291,11 @@ public class MagicPlayer extends Player {
     }
 
     private static class MoveValueTree {
-        int value;
+        double value;
         Move move;
         int iteration;
 
-        MoveValueTree(Move move, int value) {
+        MoveValueTree(Move move, double value) {
             this.move = move;
             this.value = value;
         }
