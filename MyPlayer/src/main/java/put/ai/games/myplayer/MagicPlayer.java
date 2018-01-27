@@ -188,12 +188,13 @@ public class MagicPlayer extends Player {
         final PlayerType bestMoveFilter = PlayerType.getPlayerType(player);
         stream(moves.spliterator(), true)
                 .forEach(child -> {
-                    Board b = board.clone();
-                    b.doMove(child);
-                    MoveValueTree child_node = minMax(child, depth - 1, getOpponent(player), b);
                     if (isForcedToStop.get()) {
                         return;
                     }
+                    Board b = board.clone();
+                    b.doMove(child);
+                    MoveValueTree child_node = minMax(child, depth - 1, getOpponent(player), b);
+
                     child_node.iteration = depth;
                     child_node.move = child;
                     child_node.value *= VALUE_MULTIPLIER;
