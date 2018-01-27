@@ -25,6 +25,8 @@ public class MagicPlayer extends Player {
 
     private static final Random random = new Random();
     private static final int MIN_DEPTH = 2;
+    private static final double EMPTY_FIELD_MULTIPLIER = 0.5;
+    private static final double NEIGHBOUR_FIELD_MULTIPLIER = 0.3;
     private final ExecutorService executor;
 
     private final AtomicBoolean isForcedToStop = new AtomicBoolean(false);
@@ -35,7 +37,7 @@ public class MagicPlayer extends Player {
 
     @Override
     public String getName() {
-        return "WitoldAB Kupś 127088 Mikołaj Śledź 127310";
+        return "Witold Kupś 127088 Mikołaj Śledź 127310";
     }
 
     /**
@@ -52,9 +54,10 @@ public class MagicPlayer extends Player {
         final PlayerType bestMoveFilter = PlayerType.getPlayer(playerColor);
         resetStopper();
         executor.submit(() -> {
-                    for (int d = MIN_DEPTH; timeMeasurer.hasEnoughTime() && d < 10; d += 2) {
-                        bestMoveFilter.validateResult(minMax(null, d, new AlphaBeta(), playerColor, b));
-                    }
+                    IntStream.range(MIN_DEPTH, 11)
+                            .filter(t -> timeMeasurer.hasEnoughTime())
+                            .mapToObj(d -> minMax(null, d, new AlphaBeta(), playerColor, b))
+                            .forEach(bestMoveFilter::assignIfBetter);
                     forceToStop();
                 }
         );
@@ -79,7 +82,7 @@ public class MagicPlayer extends Player {
 
     private class TimeMeasurer {
         private static final int TIME_SPACE = 100;
-        private static final int SLEEP_TIME = TIME_SPACE - 20;
+        private static final int SLEEP_TIME = TIME_SPACE - 40;
         private final long endTime;
 
         private TimeMeasurer() {
@@ -108,19 +111,19 @@ public class MagicPlayer extends Player {
      * @param board : Board
      * @return integer
      */
-    private int evaluateBoard(Board board) {
-        int value = 0;
+    private double evaluateBoard(Board board) {
+        double value = 0;
         final int size = board.getSize();
         for (int x = 0; x < size; x++) {
             for (int y = 0; y < size; y++) {
-                value += getFieldValue(board, x, y);
+                value += evaluateFieldWithNeighbours(board, x, y);
             }
         }
         return value;
     }
 
 
-    private int getFieldValue(Board board, int x, int y) {
+    private double getFieldValue(Board board, int x, int y, double onEmpty) {
         switch (board.getState(x, y)) {
             case PLAYER1:
                 return 1;
@@ -128,8 +131,38 @@ public class MagicPlayer extends Player {
                 return -1;
             case EMPTY:
             default:
-                return 0;
+                return onEmpty;
         }
+    }
+
+    private double evaluateFieldWithNeighbours(Board board, int x, int y) {
+        final int size = board.getSize();
+        double value = getFieldValue(board, x, y, 0);
+        if (value == 0) return 0;
+        double neighbours = 0;
+        if (x >= 1) {
+            neighbours += countValueVertically(board, x - 1, y, size, value*EMPTY_FIELD_MULTIPLIER);
+        }
+        if (x < size - 1) {
+            neighbours += countValueVertically(board, x + 1, y, size, value*EMPTY_FIELD_MULTIPLIER);
+        }
+        neighbours += countOnVerticalEdges(board, x, y, size, value*EMPTY_FIELD_MULTIPLIER);
+        return value + neighbours* NEIGHBOUR_FIELD_MULTIPLIER;
+    }
+
+    private double countValueVertically(Board board, int x, int y, int size, double onEmpty) {
+        return getFieldValue(board, x, y, onEmpty) + countOnVerticalEdges(board, x, y, size, onEmpty);
+    }
+
+    private double countOnVerticalEdges(Board board, int x, int y, int size, double onEmpty) {
+        double value = 0;
+        if (y >= 1) {
+            value += getFieldValue(board, x, y - 1, onEmpty);
+        }
+        if (y < size - 1) {
+            value += getFieldValue(board, x, y + 1, onEmpty);
+        }
+        return value;
     }
 
     /**
@@ -180,24 +213,17 @@ public class MagicPlayer extends Player {
 
     private abstract static class PlayerType {
         abstract boolean isBetter(double currentVal, double bestVal);
-
         abstract void manageCutOff(MoveValueTree childMove, AlphaBeta ab);
-
         abstract void manageAlphaBeta(MoveValueTree childMove, AlphaBeta ab);
 
         volatile MoveValueTree bestNode;
-        volatile int bestVal;
-
-        private PlayerType(int startValue) {
-            bestVal = startValue;
-        }
 
         static PlayerType getPlayer(Color player) {
             return player.equals(Color.PLAYER1) ? new Maximizer() : new Minimizer();
         }
 
         synchronized boolean validateResult(MoveValueTree childMove, AlphaBeta ab) {
-            validateResult(childMove);
+            assignIfBetter(childMove);
             manageAlphaBeta(childMove, ab);
             if (ab.isBettaBellowAlpha()) {
                 manageCutOff(childMove, ab);
@@ -207,21 +233,16 @@ public class MagicPlayer extends Player {
             return false;
         }
 
-        synchronized void validateResult(MoveValueTree childMove) {
+        synchronized void assignIfBetter(MoveValueTree childMove) {
             if (childMove != null && childMove.move != null &&
                     (bestNode == null ||
                             isBetter(childMove.value, bestNode.value) ||
-                            childMove.iteration > bestNode.iteration)) {
+                            childMove.iteration > bestNode.iteration))
                 bestNode = childMove;
-            }
         }
     }
 
     private static class Maximizer extends PlayerType {
-
-        private Maximizer() {
-            super(MIN_VALUE);
-        }
 
         @Override
         boolean isBetter(double currentVal, double bestVal) {
@@ -244,18 +265,14 @@ public class MagicPlayer extends Player {
 
     private static class Minimizer extends PlayerType {
 
-        private Minimizer() {
-            super(MAX_VALUE);
-        }
-
         @Override
         boolean isBetter(double currentVal, double oldVal) {
-            return currentVal < bestVal;
+            return currentVal < oldVal;
         }
 
         @Override
         void manageCutOff(MoveValueTree childMove, AlphaBeta ab) {
-            childMove.value = ab.alpha;
+            bestNode.value = ab.alpha;
         }
 
         @Override
