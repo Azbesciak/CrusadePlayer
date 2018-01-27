@@ -5,15 +5,13 @@ import java.util.Random;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.stream.IntStream;
 
 import put.ai.games.game.Board;
 import put.ai.games.game.Move;
 import put.ai.games.game.Player;
 
-import static java.lang.Integer.MAX_VALUE;
-import static java.lang.Integer.MIN_VALUE;
 import static java.lang.System.currentTimeMillis;
-import static java.util.stream.StreamSupport.stream;
 
 /**
  * class made for, and used by tree searching algorithms ( min-max, AB )
@@ -24,13 +22,13 @@ public class MagicPlayer extends Player {
 
     private static final Random random = new Random();
     private static final int MIN_DEPTH = 2;
-    private static final double VALUE_MULTIPLIER = 1.25;
+    private static final double VALUE_MULTIPLIER = 2;
     private final ExecutorService executor;
 
     private final AtomicBoolean isForcedToStop = new AtomicBoolean(false);
 
     public MagicPlayer() {
-        executor = Executors.newCachedThreadPool();
+        executor = Executors.newSingleThreadExecutor();
     }
 
     @Override
@@ -52,10 +50,10 @@ public class MagicPlayer extends Player {
         final PlayerType bestMoveFilter = PlayerType.getPlayerType(playerColor);
         resetStopper();
         executor.submit(() -> {
-                    for (int d = MIN_DEPTH; timeMeasurer.hasEnoughTime() && d < 10; d+=2) {
-                        final MoveValueTree moveValueTree = minMax(null, d, playerColor, b);
-                        bestMoveFilter.testAndAssignIfBetter(moveValueTree);
-                    }
+                    IntStream.range(MIN_DEPTH, 11)
+                            .filter(t -> timeMeasurer.hasEnoughTime())
+                            .mapToObj(d -> minMax(null, d, playerColor, b))
+                            .forEach(bestMoveFilter::testAndAssignIfBetter);
                     forceToStop();
                 }
         );
@@ -78,8 +76,8 @@ public class MagicPlayer extends Player {
     }
 
     private class TimeMeasurer {
-        private static final int TIME_SPACE = 200;
-        private static final int SLEEP_TIME = TIME_SPACE - 50;
+        private static final int TIME_SPACE = 100;
+        private static final int SLEEP_TIME = TIME_SPACE - 20;
         private final long endTime;
 
         private TimeMeasurer() {
@@ -125,10 +123,10 @@ public class MagicPlayer extends Player {
         int value = getFieldValue(board, x, y);
         if (value == 0) return 0;
         if (x >= 1) {
-            value += countValueVertically(board, x-1, y, size);
+            value += countValueVertically(board, x - 1, y, size);
         }
         if (x < size - 1) {
-            value += countValueVertically(board, x+1, y, size);
+            value += countValueVertically(board, x + 1, y, size);
         }
 
         return value + countOnVerticalEdges(board, x, y, size);
@@ -141,10 +139,10 @@ public class MagicPlayer extends Player {
     private int countOnVerticalEdges(Board board, int x, int y, int size) {
         int value = 0;
         if (y >= 1) {
-            value += getFieldValue(board, x, y-1);
+            value += getFieldValue(board, x, y - 1);
         }
-        if (y < size-1) {
-            value += getFieldValue(board, x, y+1);
+        if (y < size - 1) {
+            value += getFieldValue(board, x, y + 1);
         }
         return value;
     }
@@ -184,22 +182,21 @@ public class MagicPlayer extends Player {
         return makeAMove(depth, player, board, moves);
     }
 
-    private MoveValueTree makeAMove(int depth, Color player, Board board, Iterable<Move> moves) {
+    private MoveValueTree makeAMove(int depth, Color player, Board board, List<Move> moves) {
         final PlayerType bestMoveFilter = PlayerType.getPlayerType(player);
-        stream(moves.spliterator(), true)
-                .forEach(child -> {
-                    if (isForcedToStop.get()) {
-                        return;
-                    }
-                    Board b = board.clone();
-                    b.doMove(child);
-                    MoveValueTree child_node = minMax(child, depth - 1, getOpponent(player), b);
+        moves.parallelStream().forEach(child -> {
+            if (isForcedToStop.get()) {
+                return;
+            }
+            Board b = board.clone();
+            b.doMove(child);
+            MoveValueTree child_node = minMax(child, depth - 1, getOpponent(player), b);
 
-                    child_node.iteration = depth;
-                    child_node.move = child;
-                    child_node.value *= VALUE_MULTIPLIER;
-                    bestMoveFilter.testAndAssignIfBetter(child_node);
-                });
+            child_node.iteration = depth;
+            child_node.move = child;
+            child_node.value *= VALUE_MULTIPLIER;
+            bestMoveFilter.testAndAssignIfBetter(child_node);
+        });
         return bestMoveFilter.bestNode;
     }
 
@@ -209,13 +206,11 @@ public class MagicPlayer extends Player {
 
         abstract boolean isBetter(Double current, Double best);
 
-        PlayerType(int startVal) {
-            this.bestVal = startVal;
-        }
-
         synchronized void testAndAssignIfBetter(MoveValueTree childMove) {
             if (childMove != null &&
-                    (bestNode == null || isBetter(childMove.value, bestVal))) {
+                    (bestNode == null ||
+                            isBetter(childMove.value, bestVal) ||
+                            childMove.iteration > bestNode.iteration)) {
                 bestVal = childMove.value;
                 bestNode = childMove;
             }
@@ -228,20 +223,13 @@ public class MagicPlayer extends Player {
 
     private static class Maximizer extends PlayerType {
 
-        Maximizer() {
-            super(MIN_VALUE);
-        }
-
         @Override
         boolean isBetter(Double current, Double best) {
             return current > best;
         }
     }
-    private static class Minimizer extends PlayerType {
 
-        Minimizer() {
-            super(MAX_VALUE);
-        }
+    private static class Minimizer extends PlayerType {
 
         @Override
         boolean isBetter(Double current, Double best) {
