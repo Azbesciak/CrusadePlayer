@@ -30,7 +30,7 @@ public class MagicPlayer extends Player {
     private static final double EMPTY_FIELD_MULTIPLIER = 0.5;
     private static final double NEIGHBOUR_FIELD_MULTIPLIER = 0.3;
     private final ExecutorService executor;
-    private final ConcurrentHashMap<Board, MoveValueTree> cache = new ConcurrentHashMap<>(5000);
+    private final ConcurrentHashMap<BoardKey, MoveValueTree> cache = new ConcurrentHashMap<>(5000);
     private final AtomicBoolean isForcedToStop = new AtomicBoolean(false);
 
     public MagicPlayer() {
@@ -57,7 +57,7 @@ public class MagicPlayer extends Player {
         resetStopper();
         cache.clear();
         executor.submit(() -> {
-                    IntStream.range(MIN_DEPTH, 40)
+                    IntStream.range(MIN_DEPTH, 41)
                             .filter(t -> timeMeasurer.hasEnoughTime())
                             .mapToObj(d -> minMax(null, d, new AlphaBeta(), playerColor, b))
                             .forEach(bestMoveFilter::assignIfBetter);
@@ -169,11 +169,11 @@ public class MagicPlayer extends Player {
     }
 
     private class BoardKey {
-        final int depth;
+        final Color player;
         final Board board;
 
-        public BoardKey(int depth, Board board) {
-            this.depth = depth;
+        public BoardKey(Color player, Board board) {
+            this.player = player;
             this.board = board;
         }
 
@@ -182,14 +182,13 @@ public class MagicPlayer extends Player {
             if (this == o) return true;
             if (o == null || getClass() != o.getClass()) return false;
             BoardKey boardKey = (BoardKey) o;
-            return depth == boardKey.depth &&
+            return player == boardKey.player &&
                     Objects.equals(board, boardKey.board);
         }
 
         @Override
         public int hashCode() {
-
-            return Objects.hash(depth, board);
+            return Objects.hash(player, board);
         }
     }
 
@@ -205,12 +204,13 @@ public class MagicPlayer extends Player {
     private MoveValueTree minMax(Move node, int depth, AlphaBeta ab, Color player, Board board) {
 
         List<Move> moves = board.getMovesFor(player);
-        final MoveValueTree fromCache = cache.get(board);
+        final BoardKey boardKey = new BoardKey(player, board);
+        final MoveValueTree fromCache = cache.get(boardKey);
         if (fromCache != null && depth <= fromCache.resultForDepth) {
             return fromCache;
         }
         final MoveValueTree moveValueTree = evaluateMoveValueTree(node, depth, ab, player, board, moves);
-        cache.put(board, moveValueTree);
+        cache.put(boardKey, moveValueTree);
         return moveValueTree;
     }
 
