@@ -1,7 +1,9 @@
 package put.ai.games.myplayer;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Random;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
@@ -28,7 +30,7 @@ public class MagicPlayer extends Player {
     private static final double EMPTY_FIELD_MULTIPLIER = 0.5;
     private static final double NEIGHBOUR_FIELD_MULTIPLIER = 0.3;
     private final ExecutorService executor;
-
+    private final ConcurrentHashMap<Board, MoveValueTree> cache = new ConcurrentHashMap<>(5000);
     private final AtomicBoolean isForcedToStop = new AtomicBoolean(false);
 
     public MagicPlayer() {
@@ -53,8 +55,9 @@ public class MagicPlayer extends Player {
         final Color playerColor = getColor();
         final PlayerType bestMoveFilter = PlayerType.getPlayer(playerColor);
         resetStopper();
+        cache.clear();
         executor.submit(() -> {
-                    IntStream.range(MIN_DEPTH, 11)
+                    IntStream.range(MIN_DEPTH, 40)
                             .filter(t -> timeMeasurer.hasEnoughTime())
                             .mapToObj(d -> minMax(null, d, new AlphaBeta(), playerColor, b))
                             .forEach(bestMoveFilter::assignIfBetter);
@@ -165,6 +168,31 @@ public class MagicPlayer extends Player {
         return value;
     }
 
+    private class BoardKey {
+        final int depth;
+        final Board board;
+
+        public BoardKey(int depth, Board board) {
+            this.depth = depth;
+            this.board = board;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+            BoardKey boardKey = (BoardKey) o;
+            return depth == boardKey.depth &&
+                    Objects.equals(board, boardKey.board);
+        }
+
+        @Override
+        public int hashCode() {
+
+            return Objects.hash(depth, board);
+        }
+    }
+
     /**
      * min-max algorithm for tree searching
      *
@@ -177,7 +205,17 @@ public class MagicPlayer extends Player {
     private MoveValueTree minMax(Move node, int depth, AlphaBeta ab, Color player, Board board) {
 
         List<Move> moves = board.getMovesFor(player);
+        final MoveValueTree fromCache = cache.get(board);
+        if (fromCache != null && depth <= fromCache.resultForDepth) {
+            return fromCache;
+        }
+        final MoveValueTree moveValueTree = evaluateMoveValueTree(node, depth, ab, player, board, moves);
+        cache.put(board, moveValueTree);
+        return moveValueTree;
+    }
 
+    private MoveValueTree evaluateMoveValueTree(Move node, int depth, AlphaBeta ab,
+                                                Color player, Board board, List<Move> moves) {
         // on the leaf
         if (depth == 0 || moves.isEmpty()) {
             double v_heuristic = evaluateBoard(board);
@@ -187,6 +225,7 @@ public class MagicPlayer extends Player {
         // not leaf - do below
         return makeAMove(depth, ab.copy(), player, board, moves);
     }
+
 
     private MoveValueTree makeAMove(int depth, AlphaBeta ab, Color player, Board board, Iterable<Move> moves) {
         final PlayerType bestMoveFilter = PlayerType.getPlayer(player);
@@ -198,7 +237,7 @@ public class MagicPlayer extends Player {
                     b.doMove(child);
                     MoveValueTree child_node = minMax(child, depth - 1, ab, getOpponent(player), b);
                     if (shouldStopSearching(isCutOff)) return;
-                    child_node.iteration = depth;
+                    child_node.resultForDepth = depth;
                     child_node.move = child;
                     if (bestMoveFilter.validateResult(child_node, ab)) {
                         isCutOff.set(true);
@@ -237,7 +276,7 @@ public class MagicPlayer extends Player {
             if (childMove != null && childMove.move != null &&
                     (bestNode == null ||
                             isBetter(childMove.value, bestNode.value) ||
-                            childMove.iteration > bestNode.iteration))
+                            childMove.resultForDepth > bestNode.resultForDepth))
                 bestNode = childMove;
         }
     }
@@ -310,7 +349,7 @@ public class MagicPlayer extends Player {
     private static class MoveValueTree {
         double value;
         Move move;
-        int iteration;
+        int resultForDepth;
 
         MoveValueTree(Move move, double value) {
             this.move = move;
@@ -321,7 +360,7 @@ public class MagicPlayer extends Player {
         public String toString() {
             return "MoveValueTree{" + "value=" + value +
                     ", move=" + move +
-                    ", iteration=" + iteration +
+                    ", resultForDepth=" + resultForDepth +
                     '}';
         }
 
