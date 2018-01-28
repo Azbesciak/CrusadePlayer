@@ -1,9 +1,9 @@
 package put.ai.games.myplayer;
 
 import java.util.List;
+import java.util.Objects;
 import java.util.Random;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
+import java.util.concurrent.*;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.stream.IntStream;
 
@@ -22,9 +22,10 @@ public class MagicPlayer extends Player {
 
     private static final Random random = new Random();
     private static final int MIN_DEPTH = 2;
-    private static final double VALUE_MULTIPLIER = 2;
+    private static final double EMPTY_FIELD_MULTIPLIER = 0.5;
+    private static final double NEIGHBOUR_FIELD_MULTIPLIER = 0.3;
     private final ExecutorService executor;
-
+    private final ConcurrentHashMap<BoardKey, MoveValueTree> cache = new ConcurrentHashMap<>(50000);
     private final AtomicBoolean isForcedToStop = new AtomicBoolean(false);
 
     public MagicPlayer() {
@@ -49,16 +50,19 @@ public class MagicPlayer extends Player {
         final Color playerColor = getColor();
         final PlayerType bestMoveFilter = PlayerType.getPlayerType(playerColor);
         resetStopper();
+//        cache.clear();
         executor.submit(() -> {
                     IntStream.range(MIN_DEPTH, 11)
                             .filter(t -> timeMeasurer.hasEnoughTime())
                             .mapToObj(d -> minMax(null, d, playerColor, b))
+                            .peek(s -> System.out.println("NEW SOL " + s))
                             .forEach(bestMoveFilter::testAndAssignIfBetter);
                     forceToStop();
                 }
         );
         timeMeasurer.blockTillTimeEnd();
         forceToStop();
+        System.out.println(bestMoveFilter.bestNode);
         if (bestMoveFilter.bestNode != null && bestMoveFilter.bestNode.move != null) {
             return bestMoveFilter.bestNode.move;
         } else {
@@ -82,7 +86,7 @@ public class MagicPlayer extends Player {
 
         private TimeMeasurer() {
             endTime = currentTimeMillis() + getTime();
-            Thread.currentThread().setPriority(Thread.NORM_PRIORITY + 1);
+            Thread.currentThread().setPriority(Thread.NORM_PRIORITY + 3);
         }
 
         void blockTillTimeEnd() {
@@ -93,6 +97,10 @@ public class MagicPlayer extends Player {
                     throw new RuntimeException("STOPPED");
                 }
             }
+        }
+
+        long getTimeToTheEnd() {
+            return endTime - currentTimeMillis();
         }
 
         private boolean hasEnoughTime() {
@@ -107,47 +115,18 @@ public class MagicPlayer extends Player {
      * @param board : Board
      * @return integer
      */
-    private int evaluateBoard(Board board) {
-        int value = 0;
+    private double evaluateBoard(Board board) {
+        double value = 0;
         final int size = board.getSize();
         for (int x = 0; x < size; x++) {
             for (int y = 0; y < size; y++) {
-                value += getFieldValue(board, x, y);
+                value += evaluateFieldWithNeighbours(board, x, y);
             }
         }
         return value;
     }
 
-    private int evaluateFieldWithNeighbours(Board board, int x, int y) {
-        final int size = board.getSize();
-        int value = getFieldValue(board, x, y);
-        if (value == 0) return 0;
-        if (x >= 1) {
-            value += countValueVertically(board, x - 1, y, size);
-        }
-        if (x < size - 1) {
-            value += countValueVertically(board, x + 1, y, size);
-        }
-
-        return value + countOnVerticalEdges(board, x, y, size);
-    }
-
-    private int countValueVertically(Board board, int x, int y, int size) {
-        return getFieldValue(board, x, y) + countOnVerticalEdges(board, x, y, size);
-    }
-
-    private int countOnVerticalEdges(Board board, int x, int y, int size) {
-        int value = 0;
-        if (y >= 1) {
-            value += getFieldValue(board, x, y - 1);
-        }
-        if (y < size - 1) {
-            value += getFieldValue(board, x, y + 1);
-        }
-        return value;
-    }
-
-    private int getFieldValue(Board board, int x, int y) {
+    private double getFieldValue(Board board, int x, int y, double onEmpty) {
         switch (board.getState(x, y)) {
             case PLAYER1:
                 return 1;
@@ -155,7 +134,61 @@ public class MagicPlayer extends Player {
                 return -1;
             case EMPTY:
             default:
-                return 0;
+                return onEmpty;
+        }
+    }
+
+    private double evaluateFieldWithNeighbours(Board board, int x, int y) {
+        final int size = board.getSize();
+        double value = getFieldValue(board, x, y, 0);
+        if (value == 0) return 0;
+        double neighbours = 0;
+        if (x >= 1) {
+            neighbours += countValueVertically(board, x - 1, y, size, value * EMPTY_FIELD_MULTIPLIER);
+        }
+        if (x < size - 1) {
+            neighbours += countValueVertically(board, x + 1, y, size, value * EMPTY_FIELD_MULTIPLIER);
+        }
+        neighbours += countOnVerticalEdges(board, x, y, size, value * EMPTY_FIELD_MULTIPLIER);
+        return value + neighbours * NEIGHBOUR_FIELD_MULTIPLIER;
+    }
+
+    private double countValueVertically(Board board, int x, int y, int size, double onEmpty) {
+        return getFieldValue(board, x, y, onEmpty) + countOnVerticalEdges(board, x, y, size, onEmpty);
+    }
+
+    private double countOnVerticalEdges(Board board, int x, int y, int size, double onEmpty) {
+        double value = 0;
+        if (y >= 1) {
+            value += getFieldValue(board, x, y - 1, onEmpty);
+        }
+        if (y < size - 1) {
+            value += getFieldValue(board, x, y + 1, onEmpty);
+        }
+        return value;
+    }
+
+    private class BoardKey {
+        final Color player;
+        final Board board;
+
+        BoardKey(Color player, Board board) {
+            this.player = player;
+            this.board = board;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (o == null || getClass() != o.getClass()) return false;
+            BoardKey boardKey = (BoardKey) o;
+            return player == boardKey.player &&
+                    Objects.equals(board, boardKey.board);
+        }
+
+        @Override
+        public int hashCode() {
+            return Objects.hash(player, board);
         }
     }
 
@@ -169,13 +202,22 @@ public class MagicPlayer extends Player {
      * @return private MoveValueTree
      */
     private MoveValueTree minMax(Move node, int depth, Color player, Board board) {
-
         List<Move> moves = board.getMovesFor(player);
+        final BoardKey boardKey = new BoardKey(player, board);
+        final MoveValueTree fromCache = cache.get(boardKey);
+        if (fromCache != null && depth <= fromCache.resultForDepth) {
+            return fromCache;
+        }
+        final MoveValueTree moveValueTree = evaluateMoveValueTree(node, depth, player, board, moves);
+        cache.put(boardKey, moveValueTree);
+        return moveValueTree;
+    }
 
+    private MoveValueTree evaluateMoveValueTree(Move node, int depth, Color player, Board board, List<Move> moves) {
         // on the leaf
         if (depth == 0 || moves.isEmpty()) {
-            int v_heuristic = evaluateBoard(board);
-            return new MoveValueTree(node, v_heuristic);
+            double v_heuristic = evaluateBoard(board);
+            return new MoveValueTree(node, v_heuristic, depth);
         }
 
         // not leaf - do below
@@ -184,19 +226,17 @@ public class MagicPlayer extends Player {
 
     private MoveValueTree makeAMove(int depth, Color player, Board board, List<Move> moves) {
         final PlayerType bestMoveFilter = PlayerType.getPlayerType(player);
-        moves.parallelStream().forEach(child -> {
+        moves.parallelStream().forEach(move -> {
             if (isForcedToStop.get()) {
                 return;
             }
             Board b = board.clone();
-            b.doMove(child);
-            MoveValueTree child_node = minMax(child, depth - 1, getOpponent(player), b);
-
-            child_node.iteration = depth;
-            child_node.move = child;
-            child_node.value *= VALUE_MULTIPLIER;
-            bestMoveFilter.testAndAssignIfBetter(child_node);
+            b.doMove(move);
+            MoveValueTree childNode = minMax(move, depth - 1, getOpponent(player), b);
+            childNode.move = move;
+            bestMoveFilter.testAndAssignIfBetter(childNode);
         });
+        bestMoveFilter.bestNode.resultForDepth = depth;
         return bestMoveFilter.bestNode;
     }
 
@@ -210,7 +250,7 @@ public class MagicPlayer extends Player {
             if (childMove != null &&
                     (bestNode == null ||
                             isBetter(childMove.value, bestVal) ||
-                            childMove.iteration > bestNode.iteration)) {
+                            childMove.resultForDepth > bestNode.resultForDepth)) {
                 bestVal = childMove.value;
                 bestNode = childMove;
             }
@@ -238,25 +278,27 @@ public class MagicPlayer extends Player {
     }
 
     private static class MoveValueTree {
-        double value;
+        final double value;
         Move move;
-        int iteration;
+        int resultForDepth;
 
-        MoveValueTree(Move move, int value) {
+        MoveValueTree(Move move, double value, int resultForDepth) {
             this.move = move;
             this.value = value;
+            this.resultForDepth = resultForDepth;
         }
+
 
         @Override
         public String toString() {
             return "MoveValueTree{" + "value=" + value +
                     ", move=" + move +
-                    ", iteration=" + iteration +
+                    ", resultForDepth=" + resultForDepth +
                     '}';
         }
     }
 
     public static void main(String[] args) {
-
     }
+
 }
